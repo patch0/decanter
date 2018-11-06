@@ -8,7 +8,7 @@ module Decanter
     module ClassMethods
 
       # NOTE replacement for "new"
-      # NOTE just use "new", conventional
+      # NOTE just use "new", is conventional
       def decant(args)
         return handle_empty_args if args.blank?
         return empty_required_input_error unless required_input_keys_present?(args)
@@ -20,11 +20,11 @@ module Decanter
       def input(name, parsers=nil, **options)
         # NOTE: note sure what this does
         _name = [name].flatten
-
+        # NOTE: ??
         if _name.length > 1 && parsers.blank?
           raise ArgumentError.new("#{self.name} no parser specified for input with multiple values.")
         end
-
+        # NOTE: seems legit, will use for now
         handlers[_name] = {
           key:     options.fetch(:key, _name.first),
           name:    _name,
@@ -34,30 +34,90 @@ module Decanter
         }
       end
 
-      def unhandled_keys(args)
-        unhandled_keys = args.keys.map(&:to_sym) -
-          # handlers.keys.flatten.uniq -
-          keys_to_ignore -
-          # handlers.values
-          #   .select { |handler| handler[:type] != :input }
-          #   .map { |handler| "#{handler[:name]}_attributes".to_sym }            
+      def handled_keys(args)
+        # symbolized_keys_array
+        arg_keys = args.keys.map(&:to_sym)
 
-        if unhandled_keys.any?
-          case strict_mode
-          when true
-            p "#{self.name} ignoring unhandled keys: #{unhandled_keys.join(', ')}."
-            {}
-          when :with_exception            
-            raise(UnhandledKeysError, "#{self.name} received unhandled keys: #{unhandled_keys.join(', ')}.")
-          else
-            # NOTE: not sure what this does
-            # if either modes fail, return array of unhandled keys
-            # from the collection already extracted from args?
-            # NOTE: is circular logic
-            args.select { |key| unhandled_keys.include? key }
+        inputs, assocs = handlers.values.partition do |handler| 
+          handler[:type] == :input
+        end
+
+        {}.merge(
+          # Inputs
+
+          # select handlers where arg_keys and handler[:name] is present
+          # seems unnecessary
+          inputs.select do |handler| 
+            (arg_keys & handler[:name]).any?
+          end.
+          # 
+          reduce({}) do |memo, handler| 
+            memo.merge handle_input(handler, args)
           end
+        ).merge(
+          # Associations
+          assocs.reduce({}) do |memo, handler| 
+            memo.merge handle_association(handler, args)
+          end
+        )
+      end
+
+      def handle_input(handler, args)
+        # 
+        values = args.values_at(*handler[:name])
+        values = values.length == 1 ? values.first : values
+        parse(handler[:key], handler[:parsers], values, handler[:options])
+      end
+
+      def parse(key, parsers, values, options)
+        case
+        when !parsers
+          { key => values }
+        when options_required_and_values_are_empty(options, values)
+          raise ArgumentError.new("No value for required argument: #{key}")
         else
+          Parser.parsers_for(parsers)
+                .reduce({key => values}) do |vals_hash, parser|
+                  vals_hash.keys.reduce({}) do |acc, k| 
+                    acc.merge(parser.parse(k, vals_hash[k], options)) 
+                  end
+                end
+        end
+      end
+
+      def options_required_and_values_are_empty(options, values)
+        required?(options) && all_values_empty?(values)
+      end
+
+      def all_values_empty?(values)
+        Array.wrap(values).all? do |value| 
+          value.nil? || value == ""
+        end
+      end
+
+      def required?(options)
+        options[:required]
+      end
+
+      def handle_association(handler, args)
+        assoc_handlers = [
+          handler,
+          handler.merge({
+            key:   handler[:options].fetch(:key, "#{handler[:name]}_attributes").to_sym,
+            name:  "#{handler[:name]}_attributes".to_sym
+          })
+        ]
+
+        assoc_handler_names = assoc_handlers.map { |_handler| _handler[:name] }
+
+        case args.values_at(*assoc_handler_names).compact.length
+        when 0
           {}
+        when 1
+          _handler = assoc_handlers.detect { |_handler| args.has_key?(_handler[:name]) }
+          self.send("handle_#{_handler[:type]}", _handler, args[_handler[:name]])
+        else
+          raise ArgumentError.new("Handler #{handler[:name]} matches multiple keys: #{assoc_handler_names}.")
         end
       end
 
@@ -72,6 +132,33 @@ module Decanter
       def keys_to_ignore
         @keys_to_ignore ||= []
       end
+
+      # def unhandled_keys(args)
+      #   unhandled_keys = args.keys.map(&:to_sym) -
+      #     handlers.keys.flatten.uniq -
+      #     keys_to_ignore -
+      #     # handlers.values
+      #     #   .select { |handler| handler[:type] != :input }
+      #     #   .map { |handler| "#{handler[:name]}_attributes".to_sym }            
+
+      #   if unhandled_keys.any?
+      #     case strict_mode
+      #     when true
+      #       p "#{self.name} ignoring unhandled keys: #{unhandled_keys.join(', ')}."
+      #       {}
+      #     when :with_exception            
+      #       raise(UnhandledKeysError, "#{self.name} received unhandled keys: #{unhandled_keys.join(', ')}.")
+      #     else
+      #       # NOTE: not sure what this does
+      #       # if either modes fail, return array of unhandled keys
+      #       # from the collection already extracted from args?
+      #       # NOTE: is circular logic
+      #       args.select { |key| unhandled_keys.include? key }
+      #     end
+      #   else
+      #     {}
+      #   end
+      # end
 
       # def has_many(assoc, **options)
       #   handlers[assoc] = {
@@ -136,19 +223,7 @@ module Decanter
 
       
 
-      # def handled_keys(args)
-      #   arg_keys = args.keys.map(&:to_sym)
-      #   inputs, assocs = handlers.values.partition { |handler| handler[:type] == :input }
-
-      #   {}.merge(
-      #     # Inputs
-      #     inputs.select     { |handler| (arg_keys & handler[:name]).any? }
-      #           .reduce({}) { |memo, handler| memo.merge handle_input(handler, args) }
-      #   ).merge(
-      #     # Associations
-      #     assocs.reduce({}) { |memo, handler| memo.merge handle_association(handler, args) }
-      #   )
-      # end
+      
 
       # def handle(handler, args)
       #   values = args.values_at(*handler[:name])
@@ -156,33 +231,9 @@ module Decanter
       #   self.send("handle_#{handler[:type]}", handler, values)
       # end
 
-      # def handle_input(handler, args)
-      #    values = args.values_at(*handler[:name])
-      #    values = values.length == 1 ? values.first : values
-      #    parse(handler[:key], handler[:parsers], values, handler[:options])
-      # end
+      
 
-      # def handle_association(handler, args)
-      #   assoc_handlers = [
-      #     handler,
-      #     handler.merge({
-      #       key:   handler[:options].fetch(:key, "#{handler[:name]}_attributes").to_sym,
-      #       name:  "#{handler[:name]}_attributes".to_sym
-      #     })
-      #   ]
-
-      #   assoc_handler_names = assoc_handlers.map { |_handler| _handler[:name] }
-
-      #   case args.values_at(*assoc_handler_names).compact.length
-      #   when 0
-      #     {}
-      #   when 1
-      #     _handler = assoc_handlers.detect { |_handler| args.has_key?(_handler[:name]) }
-      #     self.send("handle_#{_handler[:type]}", _handler, args[_handler[:name]])
-      #   else
-      #     raise ArgumentError.new("Handler #{handler[:name]} matches multiple keys: #{assoc_handler_names}.")
-      #   end
-      # end
+  
 
       # def handle_has_many(handler, values)
       #   decanter = decanter_for_handler(handler)
@@ -211,19 +262,7 @@ module Decanter
       #   end
       # end
 
-      # def parse(key, parsers, values, options)
-      #   case
-      #   when !parsers
-      #     { key => values }
-      #   when options[:required] == true && Array.wrap(values).all? { |value| value.nil? || value == "" }
-      #     raise ArgumentError.new("No value for required argument: #{key}")
-      #   else
-      #     Parser.parsers_for(parsers)
-      #           .reduce({key => values}) do |vals_hash, parser|
-      #             vals_hash.keys.reduce({}) { |acc, k| acc.merge(parser.parse(k, vals_hash[k], options)) }
-      #           end
-      #   end
-      # end
+      
 
      
 
